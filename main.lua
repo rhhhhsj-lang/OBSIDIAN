@@ -1,107 +1,188 @@
-local LocalPlayer = game:GetService("Players").LocalPlayer
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Parent = game:GetService("CoreGui")
-ScreenGui.ResetOnSpawn = false
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
 
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 380, 0, 200)
-frame.Position = UDim2.new(0, 10, 0, 80)
-frame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
-frame.BorderSizePixel = 0
-frame.Parent = ScreenGui
-local fc = Instance.new("UICorner") fc.CornerRadius = UDim.new(0, 10) fc.Parent = frame
+-- نافذة
+local sg = Instance.new("ScreenGui")
+sg.Parent = game:GetService("CoreGui")
+sg.ResetOnSpawn = false
+
+local F = Instance.new("Frame")
+F.Size = UDim2.new(0, 320, 0, 180)
+F.Position = UDim2.new(0.5, -160, 0, 80)
+F.BackgroundColor3 = Color3.fromRGB(18, 18, 26)
+F.BorderSizePixel = 0
+F.Parent = sg
+local fc = Instance.new("UICorner") fc.CornerRadius = UDim.new(0, 10) fc.Parent = F
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -20, 0, 30)
+title.Size = UDim2.new(1, -20, 0, 26)
 title.Position = UDim2.new(0, 10, 0, 6)
 title.BackgroundTransparency = 1
-title.Text = "OBSIDIAN - BIO CAPTURE"
+title.Text = "Brookhaven Bio Attacker"
 title.TextColor3 = Color3.fromRGB(150, 200, 255)
 title.Font = Enum.Font.GothamBold
-title.TextSize = 14
+title.TextSize = 13
 title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = frame
+title.Parent = F
 
-local status = Instance.new("TextLabel")
-status.Size = UDim2.new(1, -20, 0, 20)
-status.Position = UDim2.new(0, 10, 0, 38)
-status.BackgroundTransparency = 1
-status.Text = "Waiting for bio change..."
-status.TextColor3 = Color3.fromRGB(255, 200, 100)
-status.Font = Enum.Font.Gotham
-status.TextSize = 11
-status.TextXAlignment = Enum.TextXAlignment.Left
-status.Parent = frame
+local T = Instance.new("TextBox")
+T.Size = UDim2.new(1, -20, 0, 32)
+T.Position = UDim2.new(0, 10, 0, 36)
+T.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
+T.Text = ""
+T.PlaceholderText = "اكتب النص هنا..."
+T.PlaceholderColor3 = Color3.fromRGB(120, 120, 140)
+T.TextColor3 = Color3.fromRGB(255, 255, 255)
+T.Font = Enum.Font.Gotham
+T.TextSize = 13
+T.BorderSizePixel = 0
+T.Parent = F
+Instance.new("UICorner", T).CornerRadius = UDim.new(0, 6)
 
-local logFrame = Instance.new("ScrollingFrame")
-logFrame.Size = UDim2.new(1, -20, 0, 120)
-logFrame.Position = UDim2.new(0, 10, 0, 64)
-logFrame.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
-logFrame.BorderSizePixel = 0
-logFrame.ScrollBarThickness = 3
-logFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-logFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-logFrame.Parent = frame
-local lfc = Instance.new("UICorner") lfc.CornerRadius = UDim.new(0, 6) lfc.Parent = logFrame
-local layout = Instance.new("UIListLayout")
-layout.Padding = UDim.new(0, 2)
-layout.Parent = logFrame
-local pad = Instance.new("UIPadding")
-pad.PaddingTop = UDim.new(0, 6)
-pad.PaddingLeft = UDim.new(0, 8)
-pad.Parent = logFrame
+local B = Instance.new("TextButton")
+B.Size = UDim2.new(1, -20, 0, 32)
+B.Position = UDim2.new(0, 10, 0, 74)
+B.BackgroundColor3 = Color3.fromRGB(50, 140, 90)
+B.Text = "APPLY (30+ payloads)"
+B.TextColor3 = Color3.fromRGB(255, 255, 255)
+B.Font = Enum.Font.GothamBold
+B.TextSize = 13
+B.BorderSizePixel = 0
+B.Parent = F
+Instance.new("UICorner", B).CornerRadius = UDim.new(0, 6)
 
-local function addLog(text, color)
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, 0, 0, 14)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = text
-    lbl.TextColor3 = color or Color3.fromRGB(200, 200, 200)
-    lbl.Font = Enum.Font.Code
-    lbl.TextSize = 10
-    lbl.TextXAlignment = Enum.TextXAlignment.Left
-    lbl.TextTruncate = Enum.TextTruncate.AtEnd
-    lbl.Parent = logFrame
-    print("[CAPTURE] " .. text)
+local S = Instance.new("TextLabel")
+S.Size = UDim2.new(1, -20, 0, 60)
+S.Position = UDim2.new(0, 10, 0, 112)
+S.BackgroundTransparency = 1
+S.Text = "Ready"
+S.TextColor3 = Color3.fromRGB(150, 200, 255)
+S.Font = Enum.Font.Gotham
+S.TextSize = 10
+S.TextXAlignment = Enum.TextXAlignment.Left
+S.TextYAlignment = Enum.TextYAlignment.Top
+S.TextWrapped = true
+S.Parent = F
+
+-- ابحث عن remotes
+local function find(name)
+    local found = {}
+    for _, obj in ipairs(game:GetDescendants()) do
+        if (obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction")) and obj.Name:lower():find(name:lower()) then
+            table.insert(found, obj)
+        end
+    end
+    return found
 end
 
-if getrawmetatable and setreadonly and newcclosure and getnamecallmethod then
-    local mt = getrawmetatable(game)
-    local oldNC = mt.__namecall
-    setreadonly(mt, false)
-    mt.__namecall = newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        if method == "FireServer" or method == "InvokeServer" then
-            if typeof(self) == "Instance" and (self:IsA("RemoteEvent") or self:IsA("RemoteFunction")) then
-                if not checkcaller or not checkcaller() then
-                    local args = {...}
-                    for i, a in ipairs(args) do
-                        if type(a) == "string" and #a > 2 and #a < 200 then
-                            local lower = a:lower()
-                            local hasLetters = lower:match("%a")
-                            if hasLetters then
-                                addLog("REMOTE: " .. self.Name, Color3.fromRGB(100, 200, 255))
-                                addLog("  TEXT[" .. i .. "]: " .. a:sub(1, 40), Color3.fromRGB(100, 255, 150))
-                                status.Text = "CAPTURED: " .. self.Name
-                                status.TextColor3 = Color3.fromRGB(100, 255, 150)
-                                break
-                            end
+local remotes = {}
+table.insert(remotes, {"UpdatePlayerProfileSettings", find("UpdatePlayerProfileSettings")})
+table.insert(remotes, {"SendPlayerProfileSettings", find("SendPlayerProfileSettings")})
+table.insert(remotes, {"SetText", find("^SetText$")})
+table.insert(remotes, {"ChangeText", find("^ChangeText$")})
+table.insert(remotes, {"SetTextColor", find("^SetTextColor$")})
+
+local function buildPayloads(text)
+    local uid = LocalPlayer.UserId
+    local nm = LocalPlayer.Name
+    return {
+        -- نصوص بسيطة
+        {text},
+        {text, uid},
+        {uid, text},
+        {text, nm},
+        {nm, text},
+
+        -- tables بحقول مختلفة (الأكثر احتمالاً للنجاح)
+        {{Bio = text}},
+        {{bio = text}},
+        {{Description = text}},
+        {{description = text}},
+        {{About = text}},
+        {{about = text}},
+        {{Status = text}},
+        {{status = text}},
+        {{Text = text}},
+        {{text = text}},
+        {{Profile = text}},
+        {{profile = text}},
+        {{ProfileName = text}},
+        {{Name = text}},
+        {{name = text}},
+
+        -- tables مختلطة
+        {{Bio = text, Name = nm}},
+        {{Description = text, UserId = uid}},
+        {{About = text, UserId = uid, Name = nm}},
+        {{Status = text, UserId = uid}},
+        {{Text = text, UserId = uid}},
+        {{Name = nm, Bio = text}},
+        {{Name = nm, Description = text}},
+        {{Name = nm, About = text, Age = 18, Gender = "N/A"}},
+        {{UserId = uid, Name = nm, Description = text}},
+
+        -- keys إضافية محتملة
+        {{SetBio = text}},
+        {{setBio = text}},
+        {{SetStatus = text}},
+        {{SetDescription = text}},
+
+        -- payload مع أمر
+        {"SetBio", text},
+        {"SetDescription", text},
+        {"SetStatus", text},
+        {"SetText", text},
+        {"Update", text},
+        {"Set", text, uid},
+
+        -- double
+        {text, text},
+        {text, {Bio = text}},
+    }
+end
+
+local function attack(text)
+    local payloads = buildPayloads(text)
+    local total = 0
+    local hit = 0
+    for _, entry in ipairs(remotes) do
+        local label = entry[1]
+        for _, r in ipairs(entry[2]) do
+            if r and r.Parent then
+                for _, payload in ipairs(payloads) do
+                    pcall(function()
+                        if r:IsA("RemoteEvent") then
+                            r:FireServer(table.unpack(payload))
+                        else
+                            r:InvokeServer(table.unpack(payload))
                         end
-                    end
+                    end)
+                    total = total + 1
+                    task.wait(0.04)
                 end
+                hit = hit + 1
+                S.Text = "Fired on " .. r.Name .. " (" .. #payloads .. " payloads)"
             end
         end
-        return oldNC(self, ...)
-    end)
-    setreadonly(mt, true)
-    addLog("Hook installed", Color3.fromRGB(100, 255, 150))
-else
-    addLog("Executor cannot hook", Color3.fromRGB(255, 100, 100))
+    end
+    S.Text = "Done! " .. total .. " sends across " .. hit .. " remotes"
+    print("[BIO] " .. total .. " payloads fired")
 end
 
-game:GetService("UserInputService").InputBegan:Connect(function(input, gp)
-    if not gp then return end
-    if input.KeyCode == Enum.KeyCode.X then
-        frame.Visible = not frame.Visible
-    end
+B.MouseButton1Click:Connect(function()
+    local text = T.Text
+    if text == "" then S.Text = "اكتب نص أول"; return end
+    S.Text = "Attacking..."
+    task.spawn(function()
+        attack(text)
+    end)
 end)
+
+-- تشخيص
+print("=== BIO REMOTES FOUND ===")
+for _, entry in ipairs(remotes) do
+    for _, r in ipairs(entry[2]) do
+        print("  " .. r:GetFullName())
+    end
+end
+print("[OBSIDIAN] Ready. Open panel, type text, hit Apply.")
