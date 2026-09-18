@@ -3,7 +3,6 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
-local InsertService = game:GetService("InsertService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
@@ -15,13 +14,11 @@ local Config = {
     SpeedOn = false, SpeedValue = 40,
     JumpOn = false, JumpValue = 90, InfJump = false,
     BioText = "",
-    AutoLearn = true,
 }
 
 local LockedTarget = nil
 local FlyBV, FlyFG
 local LogMessages = {}
-local TEST_TEXT = "OBSIDIAN_TEST_" .. math.random(10000, 99999)
 
 local function log(msg, color)
     table.insert(LogMessages, {msg = tostring(msg), color = color or Color3.fromRGB(200, 200, 210)})
@@ -32,51 +29,19 @@ end
 local refreshConsole = function() end
 
 -- ============================================================
--- BIO ENGINE
+-- BIO ENGINE (manual learn only - reliable)
 -- ============================================================
-local bioKeywords = {
-    "bio", "status", "about", "description", "profile",
-    "aboutme", "setbio", "setstatus", "setdesc", "setprofile",
-    "updatebio", "updatestatus", "abouttext", "signature",
-    "setabout", "setmessage", "tagline", "subtitle", "customstatus",
-    "changestatus", "changebio", "customtext", "playertag",
-    "setnote", "roleplaydesc", "rpdesc",
-}
-
-local function matchesBio(name)
-    local n = name:lower()
-    for _, k in ipairs(bioKeywords) do
-        if n:find(k) then return k end
-    end
-    return nil
-end
-
 local Bio = {
-    Remotes = {},
+    LearnedRemote = nil,
+    LearnedArgs = nil,
+    LastStringIndex = nil,
     Hooked = false,
-    WinningRemote = nil,
-    WinningPayload = nil,
-    Learned = false,
 }
 
-function Bio.scan()
-    Bio.Remotes = {}
-    for _, obj in ipairs(game:GetDescendants()) do
-        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-            local k = matchesBio(obj.Name)
-            if k then
-                table.insert(Bio.Remotes, {obj = obj, name = obj.Name, path = obj:GetFullName(), keyword = k})
-            end
-        end
-    end
-    log("Bio scan: " .. #Bio.Remotes .. " remotes", Color3.fromRGB(100, 200, 255))
-    return #Bio.Remotes
-end
-
-function Bio.installHook()
+local function installBioHook()
     if Bio.Hooked then return true end
     if not getrawmetatable or not setreadonly or not newcclosure or not getnamecallmethod then
-        log("Hook not supported", Color3.fromRGB(255, 100, 100))
+        log("Executor cannot hook", Color3.fromRGB(255, 100, 100))
         return false
     end
     local mt = getrawmetatable(game)
@@ -86,33 +51,34 @@ function Bio.installHook()
     mt.__namecall = newcclosure(function(self, ...)
         local method = getnamecallmethod()
         if method == "FireServer" or method == "InvokeServer" then
-            if typeof(self) == "Instance" and (self:IsA("RemoteEvent") or self:IsA("RemoteFunction")) then
-                local k = matchesBio(self.Name)
-                if k then
-                    local args = {...}
-                    -- Detect if user manually changed bio (matches no test text)
-                    local hasText = false
-                    for _, a in ipairs(args) do
-                        if type(a) == "string" and #a > 2 and not a:find("OBSIDIAN_TEST") then
-                            hasText = true
-                            break
+            if typeof(self) == "Instance" and
+               (self:IsA("RemoteEvent") or self:IsA("RemoteFunction")) then
+                local n = self.Name:lower()
+                -- Look for bio-ish remotes AND find a string argument with real content
+                if (n:find("bio") or n:find("status") or n:find("about") or
+                    n:find("desc") or n:find("profile") or n:find("message") or
+                    n:find("info") or n:find("text") or n:find("tag") or
+                    n:find("note") or n:find("sign") or n:find("custom")) then
+                    -- Only from user (not from us)
+                    if checkcaller and not checkcaller() then
+                        local args = {...}
+                        local stringIdx = nil
+                        local stringVal = nil
+                        for i, a in ipairs(args) do
+                            if type(a) == "string" and #a > 1 then
+                                stringIdx = i
+                                stringVal = a
+                                break
+                            end
                         end
-                    end
-                    if hasText and not checkcaller() then
-                        -- This is a user-triggered change - LEARN IT
-                        Bio.WinningRemote = self
-                        Bio.WinningPayload = args
-                        Bio.Learned = true
-                        log("LEARNED from your manual change: " .. self.Name, Color3.fromRGB(100, 255, 150))
-                        log("Payload structure saved", Color3.fromRGB(100, 255, 150))
-                    end
-                    -- Ensure it's in the list
-                    local exists = false
-                    for _, r in ipairs(Bio.Remotes) do
-                        if r.obj == self then exists = true break end
-                    end
-                    if not exists then
-                        table.insert(Bio.Remotes, {obj = self, name = self.Name, path = self:GetFullName(), keyword = k})
+                        if stringIdx then
+                            Bio.LearnedRemote = self
+                            Bio.LearnedArgs = args
+                            Bio.LastStringIndex = stringIdx
+                            log("LEARNED: " .. self.Name, Color3.fromRGB(100, 255, 150))
+                            log("Text captured: " .. stringVal, Color3.fromRGB(100, 255, 150))
+                            log("Payload has " .. #args .. " args (string at #" .. stringIdx .. ")", Color3.fromRGB(100, 255, 150))
+                        end
                     end
                 end
             end
@@ -121,135 +87,46 @@ function Bio.installHook()
     end)
     setreadonly(mt, true)
     Bio.Hooked = true
-    log("Bio learning hook installed", Color3.fromRGB(100, 255, 150))
+    log("Bio hook installed. Change your bio manually ONCE.", Color3.fromRGB(100, 255, 150))
     return true
 end
 
--- Detect bio display in LocalPlayer (looking for our test text)
-local function findBioDisplay(textToFind)
-    local c = LocalPlayer.Character
-    if c then
-        for _, obj in ipairs(c:GetDescendants()) do
-            if obj:IsA("BillboardGui") or obj:IsA("SurfaceGui") then
-                for _, lbl in ipairs(obj:GetDescendants()) do
-                    if lbl:IsA("TextLabel") and lbl.Text:find(textToFind, 1, true) then
-                        return obj
-                    end
-                end
-            end
-        end
+function Bio.apply(text)
+    if not Bio.LearnedRemote or not Bio.LearnedArgs then
+        log("Not learned. Change bio manually in-game first.", Color3.fromRGB(255, 200, 100))
+        return false
     end
-    local pg = LocalPlayer:FindFirstChild("PlayerGui")
-    if pg then
-        for _, obj in ipairs(pg:GetDescendants()) do
-            if obj:IsA("TextLabel") and obj.Text:find(textToFind, 1, true) then
-                return obj
-            end
-        end
-    end
-    return nil
-end
-
--- Probe: try all payloads on one remote with test text
-local function probeRemote(remote, testText)
-    local lp = LocalPlayer
-    local payloads = {
-        {testText}, {lp, testText}, {testText, lp},
-        {lp.UserId, testText}, {testText, lp.UserId},
-        {lp.Name, testText}, {testText, lp.Name},
-        {"SetBio", testText}, {"SetStatus", testText},
-        {"SetAbout", testText}, {"UpdateBio", testText},
-        {"Bio", testText}, {"bio", testText}, {"Set", testText},
-        {lp.Character, testText}, {testText, lp.Character},
-        {testText, true}, {testText, 1},
-    }
-    for _, payload in ipairs(payloads) do
-        pcall(function()
-            if remote:IsA("RemoteEvent") then
-                remote:FireServer(table.unpack(payload))
-            else
-                remote:InvokeServer(table.unpack(payload))
-            end
-        end)
-        task.wait(0.08)
-    end
-end
-
--- Auto-learn: write test text, look for changes
-function Bio.autoLearn()
-    log("=== AUTO-LEARN MODE ===", Color3.fromRGB(255, 200, 100))
-    log("Writing test text: " .. TEST_TEXT, Color3.fromRGB(255, 200, 100))
-
-    if #Bio.Remotes == 0 then Bio.scan() end
-    if #Bio.Remotes == 0 then
-        log("No bio remotes found", Color3.fromRGB(255, 100, 100))
+    if not Bio.LearnedRemote.Parent then
+        log("Learned remote was destroyed. Re-learn required.", Color3.fromRGB(255, 100, 100))
         return false
     end
 
-    local foundWinners = {}
-    for _, r in ipairs(Bio.Remotes) do
-        if r.obj.Parent then
-            probeRemote(r.obj, TEST_TEXT)
-            task.wait(0.2)
-            -- Check if the display changed
-            if findBioDisplay(TEST_TEXT) then
-                table.insert(foundWinners, r)
-                log("HIT! Remote responded: " .. r.path, Color3.fromRGB(100, 255, 150))
-            end
+    local newArgs = {}
+    for i, a in ipairs(Bio.LearnedArgs) do
+        if i == Bio.LastStringIndex then
+            newArgs[i] = text
+        else
+            newArgs[i] = a
         end
     end
 
-    if #foundWinners > 0 then
-        Bio.WinningRemote = foundWinners[1].obj
-        Bio.Learned = true
-        log("Winner: " .. foundWinners[1].path, Color3.fromRGB(100, 255, 150))
-        return true
+    local ok = pcall(function()
+        if Bio.LearnedRemote:IsA("RemoteEvent") then
+            Bio.LearnedRemote:FireServer(table.unpack(newArgs))
+        else
+            Bio.LearnedRemote:InvokeServer(table.unpack(newArgs))
+        end
+    end)
+    if ok then
+        log("Bio sent: " .. text, Color3.fromRGB(100, 255, 150))
+    else
+        log("Send failed", Color3.fromRGB(255, 100, 100))
     end
-
-    log("No visible response. Change your bio manually once to teach.", Color3.fromRGB(255, 200, 100))
-    return false
-end
-
--- Apply custom text on learned remote
-function Bio.apply(text)
-    if text == "" then
-        log("Enter bio text first", Color3.fromRGB(255, 200, 100))
-        return
-    end
-
-    if not Bio.Learned or not Bio.WinningRemote or not Bio.WinningRemote.Parent then
-        log("Not learned yet. Run Auto-Learn or change bio manually once.", Color3.fromRGB(255, 200, 100))
-        return
-    end
-
-    local r = Bio.WinningRemote
-    local lp = LocalPlayer
-    local payloads = {
-        {text}, {lp, text}, {text, lp},
-        {lp.UserId, text}, {text, lp.UserId},
-        {lp.Name, text}, {text, lp.Name},
-        {"SetBio", text}, {"SetStatus", text},
-        {"SetAbout", text}, {"UpdateBio", text},
-        {"Bio", text}, {"bio", text}, {"Set", text},
-        {lp.Character, text}, {text, lp.Character},
-        {text, true}, {text, 1},
-    }
-
-    for _, payload in ipairs(payloads) do
-        pcall(function()
-            if r:IsA("RemoteEvent") then
-                r:FireServer(table.unpack(payload))
-            else
-                r:InvokeServer(table.unpack(payload))
-            end
-        end)
-        task.wait(0.1)
-    end
-    log("Bio applied: " .. text, Color3.fromRGB(100, 255, 150))
+    return ok
 end
 
 -- ============================================================
--- SKINS
+-- SKINS - FIXED with HumanoidDescription:AddAccessory
 -- ============================================================
 local function clearAccessories()
     local c = LocalPlayer.Character
@@ -259,33 +136,40 @@ local function clearAccessories()
     end
 end
 
-local function wearAccessory(assetId)
+local function applyAccessoryViaDescription(assetId)
     local c = LocalPlayer.Character
-    if not c then return false end
-    local ok, model = pcall(function() return InsertService:LoadAsset(assetId) end)
-    if not ok or not model then
-        log("Failed to load: " .. tostring(assetId), Color3.fromRGB(255, 100, 100))
-        return false
-    end
-    local worn = false
-    for _, v in ipairs(model:GetChildren()) do
-        if v:IsA("Accessory") or v:IsA("Hat") then
-            local clone = v:Clone()
-            clone.Parent = c
-            worn = true
-        end
-    end
-    model:Destroy()
-    return worn
+    if not c then return false, "no character" end
+    local h = c:FindFirstChildOfClass("Humanoid")
+    if not h then return false, "no humanoid" end
+
+    -- Get current description and add accessory
+    local ok, desc = pcall(function() return h:GetAppliedDescription() end)
+    if not ok or not desc then return false, "no description" end
+
+    -- Add accessory (this fetches the asset server-side)
+    local addOk = pcall(function() desc:AddAccessory(assetId) end)
+    if not addOk then return false, "addAccessory failed" end
+
+    -- Apply
+    local ok1 = pcall(function() h:ApplyDescriptionReset(desc) end)
+    if ok1 then return true, "applied reset" end
+    local ok2 = pcall(function() h:ApplyDescription(desc) end)
+    if ok2 then return true, "applied" end
+    return false, "apply failed"
 end
 
-local function applySkin(ids)
+local function applySkin(assetIds)
     clearAccessories()
-    local count = 0
-    for _, id in ipairs(ids) do
-        if wearAccessory(id) then count = count + 1 end
+    local results = {}
+    for _, id in ipairs(assetIds) do
+        local ok, msg = applyAccessoryViaDescription(id)
+        if ok then
+            table.insert(results, "OK:" .. id)
+        else
+            table.insert(results, "FAIL:" .. id .. " (" .. tostring(msg) .. ")")
+        end
     end
-    log("Skin applied: " .. count .. "/" .. #ids, Color3.fromRGB(100, 255, 150))
+    log("Skin result: " .. table.concat(results, " | "), Color3.fromRGB(100, 255, 150))
 end
 
 -- ============================================================
@@ -372,7 +256,6 @@ CloseBtn.TextSize = 13 CloseBtn.BorderSizePixel = 0 CloseBtn.Parent = Header
 local CBC = Instance.new("UICorner") CBC.CornerRadius = UDim.new(0, 7) CBC.Parent = CloseBtn
 
 local TabBar = Instance.new("ScrollingFrame")
-TabBar.Name = "TabBar"
 TabBar.Size = UDim2.new(1, -16, 0, 44)
 TabBar.Position = UDim2.new(0, 8, 0, 46)
 TabBar.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
@@ -398,7 +281,6 @@ TabPad.PaddingRight = UDim.new(0, 6)
 TabPad.Parent = TabBar
 
 local ContentArea = Instance.new("Frame")
-ContentArea.Name = "ContentArea"
 ContentArea.Size = UDim2.new(1, -16, 1, -100)
 ContentArea.Position = UDim2.new(0, 8, 0, 96)
 ContentArea.BackgroundTransparency = 1 ContentArea.Parent = Main
@@ -444,7 +326,7 @@ local function makeTab(label, pageName)
     B.Size = UDim2.new(0, 70, 0, 34)
     B.BackgroundColor3 = Color3.fromRGB(32, 32, 44)
     B.Text = label B.TextColor3 = Color3.fromRGB(200, 200, 210)
-    B.Font = Enum.Font.GothamBold B.TextSize = 11 B.TextWrapped = false
+    B.Font = Enum.Font.GothamBold B.TextSize = 11
     B.BorderSizePixel = 0 B.AutoButtonColor = false B.Active = true
     B.Parent = TabBar
     local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, 6) c.Parent = B
@@ -541,6 +423,7 @@ local function makeButton(parent, text, cb, col)
     B.MouseButton1Click:Connect(function()
         local ok, err = pcall(cb)
         if not ok then log("Error: " .. tostring(err), Color3.fromRGB(255, 100, 100)) end
+        refreshConsole()
     end)
     return B
 end
@@ -582,10 +465,10 @@ makePage("tools")
 local bio = Pages["bio"]
 makeHeader(bio, "STATUS")
 local statusLbl = Instance.new("TextLabel")
-statusLbl.Size = UDim2.new(1, 0, 0, 24)
+statusLbl.Size = UDim2.new(1, 0, 0, 26)
 statusLbl.BackgroundColor3 = Color3.fromRGB(40, 30, 30)
 statusLbl.BorderSizePixel = 0
-statusLbl.Text = "  Learning: NOT STARTED"
+statusLbl.Text = "  Not learned yet"
 statusLbl.TextColor3 = Color3.fromRGB(255, 200, 100)
 statusLbl.TextXAlignment = Enum.TextXAlignment.Left
 statusLbl.Font = Enum.Font.GothamBold
@@ -594,68 +477,56 @@ statusLbl.Parent = bio
 local SLC = Instance.new("UICorner") SLC.CornerRadius = UDim.new(0, 4) SLC.Parent = statusLbl
 
 local function updateStatus()
-    if Bio.Learned then
-        statusLbl.Text = "  ✓ LEARNED: " .. Bio.WinningRemote.Name
+    if Bio.LearnedRemote then
+        statusLbl.Text = "  ✓ Learned: " .. Bio.LearnedRemote.Name
         statusLbl.TextColor3 = Color3.fromRGB(100, 255, 150)
         statusLbl.BackgroundColor3 = Color3.fromRGB(30, 50, 35)
     else
-        statusLbl.Text = "  Learning: NOT STARTED"
+        statusLbl.Text = "  Not learned yet"
         statusLbl.TextColor3 = Color3.fromRGB(255, 200, 100)
         statusLbl.BackgroundColor3 = Color3.fromRGB(40, 30, 30)
     end
 end
 
-makeHeader(bio, "AUTO-LEARN (test first)")
-makeButton(bio, "1. WRITE TEST TEXT + LEARN", function()
-    if Bio.autoLearn() then
-        updateStatus()
-    end
-    refreshConsole()
+makeHeader(bio, "STEP 1: TEACH")
+makeButton(bio, "Install Hook (required)", function()
+    installBioHook()
+    updateStatus()
 end, Color3.fromRGB(50, 130, 100))
 
-makeHeader(bio, "APPLY CUSTOM")
+makeHeader(bio, "STEP 2: ENTER TEXT")
 makeInput(bio, "Your Bio Text", "BioText", "Type your bio")
-makeButton(bio, "2. APPLY MY TEXT", function()
+
+makeHeader(bio, "STEP 3: APPLY")
+makeButton(bio, "APPLY MY TEXT", function()
     Bio.apply(Config.BioText)
-    refreshConsole()
 end, Color3.fromRGB(60, 120, 180))
 
-makeHeader(bio, "MANUAL LEARN (fallback)")
-makeButton(bio, "Install Hook (for manual teach)", function()
-    Bio.installHook()
-    refreshConsole()
-end, Color3.fromRGB(80, 80, 120))
-makeButton(bio, "Scan Bio Remotes", function()
-    Bio.scan()
-    refreshConsole()
-end, Color3.fromRGB(80, 80, 120))
-makeButton(bio, "Print All Remotes", function()
-    log("=== BIO REMOTES (" .. #Bio.Remotes .. ") ===")
-    for i, r in ipairs(Bio.Remotes) do
-        log(i .. ". [" .. r.keyword .. "] " .. r.path)
+makeButton(bio, "Show Learned Info", function()
+    if Bio.LearnedRemote then
+        log("Remote: " .. Bio.LearnedRemote:GetFullName())
+        log("Args count: " .. #Bio.LearnedArgs)
+        log("String index: " .. tostring(Bio.LastStringIndex))
+    else
+        log("Nothing learned yet")
     end
-    refreshConsole()
 end, Color3.fromRGB(80, 80, 120))
 
 -- SKINS
 local skins = Pages["skins"]
-makeHeader(skins, "SKINS")
+makeHeader(skins, "SKINS (FIXED)")
 makeButton(skins, "Bucket of Doom", function()
     applySkin({135609592452959})
-    refreshConsole()
 end, Color3.fromRGB(70, 90, 130))
 makeButton(skins, "Red Overseer Hood", function()
     applySkin({101531172994670})
-    refreshConsole()
 end, Color3.fromRGB(70, 90, 130))
 makeButton(skins, "Wear Both", function()
     applySkin({135609592452959, 101531172994670})
-    refreshConsole()
 end, Color3.fromRGB(70, 110, 90))
 makeButton(skins, "Remove All Accessories", function()
     clearAccessories()
     log("Accessories removed")
-    refreshConsole()
 end, Color3.fromRGB(140, 60, 60))
 makeHeader(skins, "TOOLS")
 makeButton(skins, "Random Body Color", function()
@@ -763,16 +634,6 @@ makeButton(tools, "Game Info", function()
     log("Players: " .. #Players:GetPlayers())
     log("Drawing: " .. tostring(Drawing ~= nil))
     log("Hook: " .. tostring(hookmetamethod ~= nil))
-    refreshConsole()
-end, Color3.fromRGB(70, 110, 170))
-makeButton(tools, "Check Bio Display (look for test text)", function()
-    local found = findBioDisplay(TEST_TEXT)
-    if found then
-        log("Bio display found: " .. found:GetFullName(), Color3.fromRGB(100, 255, 150))
-    else
-        log("No bio display detected with test text")
-    end
-    refreshConsole()
 end, Color3.fromRGB(70, 110, 170))
 
 -- Tabs
@@ -1005,19 +866,10 @@ Players.PlayerRemoving:Connect(removeESP)
 
 -- Auto-init
 task.spawn(function()
-    task.wait(1)
-    Bio.installHook()
-    task.wait(0.5)
-    Bio.scan()
+    task.wait(1.5)
+    installBioHook()
     updateStatus()
-    refreshConsole()
-    -- Auto-learn on load
-    task.wait(1)
-    log("Starting auto-learn...", Color3.fromRGB(255, 200, 100))
-    if Bio.autoLearn() then
-        updateStatus()
-    end
     refreshConsole()
 end)
 
-log("OBSIDIAN v7 loaded", Color3.fromRGB(150, 200, 255))
+log("OBSIDIAN v8 loaded", Color3.fromRGB(150, 200, 255))
