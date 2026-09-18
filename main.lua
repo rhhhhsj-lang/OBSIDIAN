@@ -1,182 +1,276 @@
--- OBSIDIAN HUB | Commercial Edition
--- Aimbot + ESP + Avatar System + Floating Icon
+-- OBSIDIAN HUB | Billboard Broadcast Edition
+-- Message above head visible to all players via chat replication
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
-local UserInputService = game:GetService("UserInputService")
+local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TextChatService = game:GetService("TextChatService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
-local State = {
-    AimbotEnabled = false,
-    ESPEnabled = false,
-    TeamCheck = true,
-    FriendCheck = true,
-    TargetLock = false,
-    AimbotFOV = 200,
-    AimbotSmoothness = 25,
-    MaxDistance = 1000,
-    TargetPart = "Head",
-    BoxColor = Color3.fromRGB(255, 60, 60),
-    TracerEnabled = true,
-    TargetUsername = "",
+print("[OBSIDIAN] Billboard Broadcast loaded")
+
+-- ============================================================
+-- BILLBOARD BROADCAST SYSTEM
+-- ============================================================
+local Broadcast = {
+    Text = "OBSIDIAN",
+    RGB = true,
+    Spam = false,
+    SpamInterval = 3,
+    Loop = false,
+    LocalBillboard = nil,
+    LocalLabel = nil,
 }
 
-local LockedTarget = nil
-local MenuOpen = false
-
--- =================== AVATAR SYSTEM ===================
-local function applyAvatarFromUserId(userId)
+-- ===== Method 1: Local billboard (only you see it, always works) =====
+function Broadcast.attachLocal()
     local char = LocalPlayer.Character
-    if not char then return false end
-    local humanoid = char:FindFirstChildOfClass("Humanoid")
-    if not humanoid then return false end
-    local ok, desc = pcall(function()
-        return Players:GetHumanoidDescriptionFromUserId(userId)
-    end)
-    if not ok or not desc then return false end
-    pcall(function() humanoid:ApplyDescriptionReset(desc) end)
-    return true
+    if not char then return end
+    local head = char:FindFirstChild("Head")
+    if not head then return end
+
+    if Broadcast.LocalBillboard then Broadcast.LocalBillboard:Destroy() end
+
+    local bb = Instance.new("BillboardGui")
+    bb.Name = "__OBSIDIAN_TAG"
+    bb.Size = UDim2.new(0, 220, 0, 40)
+    bb.StudsOffset = Vector3.new(0, 3.5, 0)
+    bb.AlwaysOnTop = true
+    bb.MaxDistance = 1000
+    bb.Parent = head
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = Broadcast.Text
+    lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextScaled = true
+    lbl.TextStrokeTransparency = 0.3
+    lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    lbl.Parent = bb
+
+    Broadcast.LocalBillboard = bb
+    Broadcast.LocalLabel = lbl
 end
 
-local function applyAvatarFromUsername(username)
-    if username == "" then return false end
-    local userId = nil
-    pcall(function() userId = Players:GetUserIdFromNameAsync(username) end)
-    if not userId then
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p.Name:lower() == username:lower() then
-                userId = p.UserId
-                break
+function Broadcast.detachLocal()
+    if Broadcast.LocalBillboard then
+        Broadcast.LocalBillboard:Destroy()
+        Broadcast.LocalBillboard = nil
+        Broadcast.LocalLabel = nil
+    end
+end
+
+-- ===== Method 2: Chat bubble broadcast (replicates to ALL players) =====
+-- This uses the legacy chat system - works in most games including Brookhaven
+function Broadcast.sendChat(message)
+    if not message or message == "" then return false end
+
+    -- Method A: Legacy SayMessageRequest
+    local ok1 = pcall(function()
+        local chatEvents = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+        if chatEvents then
+            local say = chatEvents:FindFirstChild("SayMessageRequest")
+            if say then
+                say:FireServer(message, "All")
+                return true
+            end
+        end
+        return false
+    end)
+
+    -- Method B: TextChatService (newer)
+    local ok2 = pcall(function()
+        if TextChatService and TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+            local channels = TextChatService:FindFirstChild("TextChannels")
+            if channels then
+                local general = channels:FindFirstChild("RBXGeneral") or channels:FindFirstChild("General")
+                if general then
+                    general:SendAsync(message)
+                end
+            end
+        end
+    end)
+
+    -- Method C: Fire any remote with "say" or "chat" in name
+    local ok3 = pcall(function()
+        for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+            if obj:IsA("RemoteEvent") then
+                local n = obj.Name:lower()
+                if n:find("say") or n:find("chat") or n:find("message") or n:find("bubble") then
+                    pcall(function() obj:FireServer(message, "All") end)
+                    pcall(function() obj:FireServer(message) end)
+                    pcall(function() obj:FireServer("All", message) end)
+                end
+            end
+        end
+    end)
+
+    return ok1 or ok2 or ok3
+end
+
+-- ===== Method 3: Try to hijack game nametag system =====
+function Broadcast.tryGameNametag(message, color)
+    local found = 0
+    for _, obj in ipairs(game:GetDescendants()) do
+        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+            local n = obj.Name:lower()
+            if n:find("nametag") or n:find("nameplate") or n:find("billboard") or n:find("tag") or n:find("overhead") then
+                pcall(function() obj:FireServer(message) end)
+                pcall(function() obj:FireServer(LocalPlayer, message) end)
+                pcall(function() obj:FireServer("SetText", message) end)
+                pcall(function() obj:FireServer("SetName", message) end)
+                if color then
+                    pcall(function() obj:FireServer("SetColor", color) end)
+                end
+                found = found + 1
             end
         end
     end
-    if userId then return applyAvatarFromUserId(userId) end
-    return false
+    print("[OBSIDIAN] Tried " .. found .. " nametag remotes")
+    return found
 end
 
--- =================== GUI ===================
+-- ===== Loop =====
+local spamThread = nil
+
+function Broadcast.startSpam()
+    if spamThread then return end
+    Broadcast.Spam = true
+    spamThread = task.spawn(function()
+        while Broadcast.Spam do
+            if Broadcast.Loop then
+                -- alternate between chat bubble and game nametag
+                Broadcast.sendChat(Broadcast.Text)
+                Broadcast.tryGameNametag(Broadcast.Text, Color3.fromRGB(255, 100, 100))
+            else
+                Broadcast.sendChat(Broadcast.Text)
+            end
+            task.wait(Broadcast.SpamInterval)
+        end
+    end)
+end
+
+function Broadcast.stopSpam()
+    Broadcast.Spam = false
+    spamThread = nil
+end
+
+-- ============================================================
+-- GUI
+-- ============================================================
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "OBSIDIAN"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.IgnoreGuiInset = true
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.DisplayOrder = 999
 pcall(function() ScreenGui.Parent = game:GetService("CoreGui") end)
 if not ScreenGui.Parent then ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
 
--- ===== FLOATING ICON =====
+local vp = Camera.ViewportSize
+local FW = math.clamp(vp.X * 0.9, 300, 380)
+local FH = math.clamp(vp.Y * 0.6, 380, 460)
+
+-- Icon
 local Icon = Instance.new("ImageButton")
-Icon.Name = "FloatingIcon"
-Icon.Size = UDim2.new(0, 54, 0, 54)
-Icon.Position = UDim2.new(0, 20, 0, 120)
-Icon.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+Icon.Size = UDim2.new(0, 52, 0, 52)
+Icon.Position = UDim2.new(0, 15, 0, 100)
+Icon.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
 Icon.BorderSizePixel = 0
-Icon.Image = ""
 Icon.AutoButtonColor = false
 Icon.Active = true
-Icon.Draggable = false
 Icon.Parent = ScreenGui
+local IC = Instance.new("UICorner") IC.CornerRadius = UDim.new(1, 0) IC.Parent = Icon
+local IStr = Instance.new("UIStroke")
+IStr.Color = Color3.fromRGB(90, 140, 220)
+IStr.Thickness = 2
+IStr.Parent = Icon
+local ILbl = Instance.new("TextLabel")
+ILbl.Size = UDim2.new(1, 0, 1, 0)
+ILbl.BackgroundTransparency = 1
+ILbl.Text = "V"
+ILbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+ILbl.Font = Enum.Font.GothamBlack
+ILbl.TextSize = 26
+ILbl.Parent = Icon
 
-local IconCorner = Instance.new("UICorner")
-IconCorner.CornerRadius = UDim.new(1, 0)
-IconCorner.Parent = Icon
-
-local IconStroke = Instance.new("UIStroke")
-IconStroke.Color = Color3.fromRGB(90, 140, 220)
-IconStroke.Thickness = 2
-IconStroke.Transparency = 0
-IconStroke.Parent = Icon
-
-local IconLabel = Instance.new("TextLabel")
-IconLabel.Size = UDim2.new(1, 0, 1, 0)
-IconLabel.BackgroundTransparency = 1
-IconLabel.Text = "V"
-IconLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-IconLabel.Font = Enum.Font.GothamBlack
-IconLabel.TextSize = 26
-IconLabel.Parent = Icon
-
--- Icon drag logic
-local iconDragging = false
-local iconDragStart, iconStartPos
-
+local iconDrag = false
+local iconStart, iconPos
 Icon.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        iconDragging = false
-        iconDragStart = input.Position
-        iconStartPos = Icon.Position
+        iconDrag = false
+        iconStart = input.Position
+        iconPos = Icon.Position
     end
 end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if iconDragStart and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - iconDragStart
-        if delta.Magnitude > 8 then
-            iconDragging = true
-            Icon.Position = UDim2.new(0, iconStartPos.X.Offset + delta.X, 0, iconStartPos.Y.Offset + delta.Y)
+UIS.InputChanged:Connect(function(input)
+    if iconStart and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local d = input.Position - iconStart
+        if d.Magnitude > 8 then
+            iconDrag = true
+            Icon.Position = UDim2.new(0, iconPos.X.Offset + d.X, 0, iconPos.Y.Offset + d.Y)
         end
     end
 end)
-
-UserInputService.InputEnded:Connect(function(input)
+UIS.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        iconDragStart = nil
+        iconStart = nil
     end
 end)
 
--- ===== MAIN MENU =====
+-- Main
 local Main = Instance.new("Frame")
-Main.Name = "Main"
-Main.Size = UDim2.new(0, 300, 0, 420)
-Main.Position = UDim2.new(0, 20, 0, 190)
-Main.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+Main.Size = UDim2.new(0, 0, 0, FH)
+Main.Position = UDim2.new(0.5, -FW/2, 0.5, -FH/2)
+Main.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
 Main.BorderSizePixel = 0
 Main.Active = true
-Main.Draggable = true
 Main.Visible = false
+Main.ClipsDescendants = true
 Main.Parent = ScreenGui
+local MC = Instance.new("UICorner") MC.CornerRadius = UDim.new(0, 12) MC.Parent = Main
+local MStr = Instance.new("UIStroke")
+MStr.Color = Color3.fromRGB(90, 140, 220)
+MStr.Thickness = 1.5
+MStr.Transparency = 0.4
+MStr.Parent = Main
 
-local UC = Instance.new("UICorner") UC.CornerRadius = UDim.new(0, 12) UC.Parent = Main
-local Stroke = Instance.new("UIStroke") Stroke.Color = Color3.fromRGB(90, 140, 220) Stroke.Thickness = 1.5 Stroke.Transparency = 0.3 Stroke.Parent = Main
+local Header = Instance.new("Frame")
+Header.Size = UDim2.new(1, 0, 0, 42)
+Header.BackgroundColor3 = Color3.fromRGB(26, 26, 36)
+Header.BorderSizePixel = 0
+Header.Parent = Main
+local HC = Instance.new("UICorner") HC.CornerRadius = UDim.new(0, 12) HC.Parent = Header
 
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, 0, 0, 40)
-Title.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
-Title.BorderSizePixel = 0
-Title.Text = "   OBSIDIAN"
-Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Font = Enum.Font.GothamBold
-Title.TextSize = 16
-Title.Parent = Main
-local TC = Instance.new("UICorner") TC.CornerRadius = UDim.new(0, 12) TC.Parent = Title
-
-local SubTitle = Instance.new("TextLabel")
-SubTitle.Size = UDim2.new(1, -60, 0, 40)
-SubTitle.Position = UDim2.new(0, 0, 0, 0)
-SubTitle.BackgroundTransparency = 1
-SubTitle.Text = "HUB"
-SubTitle.TextColor3 = Color3.fromRGB(90, 140, 220)
-SubTitle.TextXAlignment = Enum.TextXAlignment.Left
-SubTitle.Font = Enum.Font.GothamBold
-SubTitle.TextSize = 16
-SubTitle.Parent = Title
+local HText = Instance.new("TextLabel")
+HText.Size = UDim2.new(1, -80, 1, 0)
+HText.Position = UDim2.new(0, 12, 0, 0)
+HText.BackgroundTransparency = 1
+HText.Text = "OBSIDIAN  •  BROADCAST"
+HText.TextColor3 = Color3.fromRGB(255, 255, 255)
+HText.TextXAlignment = Enum.TextXAlignment.Left
+HText.Font = Enum.Font.GothamBold
+HText.TextSize = 13
+HText.Parent = Header
 
 local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size = UDim2.new(0, 30, 0, 30)
-CloseBtn.Position = UDim2.new(1, -35, 0, 5)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+CloseBtn.Size = UDim2.new(0, 28, 0, 28)
+CloseBtn.Position = UDim2.new(1, -34, 0, 7)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(210, 55, 55)
 CloseBtn.Text = "X"
 CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.TextSize = 14
+CloseBtn.TextSize = 13
 CloseBtn.BorderSizePixel = 0
-CloseBtn.Parent = Title
-local CC = Instance.new("UICorner") CC.CornerRadius = UDim.new(0, 8) CC.Parent = CloseBtn
+CloseBtn.Parent = Header
+local CBC = Instance.new("UICorner") CBC.CornerRadius = UDim.new(0, 7) CBC.Parent = CloseBtn
 
+-- Content
 local Container = Instance.new("ScrollingFrame")
 Container.Size = UDim2.new(1, -16, 1, -52)
 Container.Position = UDim2.new(0, 8, 0, 44)
@@ -185,26 +279,23 @@ Container.BorderSizePixel = 0
 Container.ScrollBarThickness = 3
 Container.ScrollBarImageColor3 = Color3.fromRGB(90, 140, 220)
 Container.CanvasSize = UDim2.new(0, 0, 0, 0)
-Container.ScrollBarImageTransparency = 0.3
 Container.Parent = Main
 
 local Layout = Instance.new("UIListLayout")
 Layout.Padding = UDim.new(0, 6)
 Layout.SortOrder = Enum.SortOrder.LayoutOrder
 Layout.Parent = Container
-
 Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
     Container.CanvasSize = UDim2.new(0, 0, 0, Layout.AbsoluteContentSize.Y + 8)
 end)
 
--- ===== UI HELPERS =====
 local function makeHeader(text)
     local L = Instance.new("TextLabel")
     L.Size = UDim2.new(1, 0, 0, 22)
-    L.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+    L.BackgroundColor3 = Color3.fromRGB(36, 36, 50)
     L.BorderSizePixel = 0
     L.Text = "  " .. text
-    L.TextColor3 = Color3.fromRGB(90, 140, 220)
+    L.TextColor3 = Color3.fromRGB(90, 160, 240)
     L.TextXAlignment = Enum.TextXAlignment.Left
     L.Font = Enum.Font.GothamBold
     L.TextSize = 12
@@ -212,386 +303,190 @@ local function makeHeader(text)
     local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, 4) c.Parent = L
 end
 
-local function makeToggle(text, key, callback)
+local function makeToggle(text, default, callback)
+    local state = default or false
     local Btn = Instance.new("TextButton")
     Btn.Size = UDim2.new(1, 0, 0, 32)
-    Btn.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
-    Btn.TextColor3 = Color3.fromRGB(220, 220, 220)
-    Btn.Text = "  " .. text .. "  OFF"
+    Btn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    Btn.TextColor3 = Color3.fromRGB(215, 215, 220)
+    Btn.Text = "  " .. text .. "  |  OFF"
     Btn.TextXAlignment = Enum.TextXAlignment.Left
     Btn.Font = Enum.Font.Gotham
-    Btn.TextSize = 13
+    Btn.TextSize = 12
     Btn.BorderSizePixel = 0
     Btn.AutoButtonColor = false
     Btn.Parent = Container
     local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, 6) c.Parent = Btn
-
     Btn.MouseButton1Click:Connect(function()
-        State[key] = not State[key]
-        Btn.Text = "  " .. text .. "  " .. (State[key] and "ON" or "OFF")
-        Btn.BackgroundColor3 = State[key] and Color3.fromRGB(50, 90, 60) or Color3.fromRGB(32, 32, 42)
-        if callback then callback(State[key]) end
+        state = not state
+        Btn.Text = "  " .. text .. "  |  " .. (state and "ON" or "OFF")
+        Btn.BackgroundColor3 = state and Color3.fromRGB(45, 85, 55) or Color3.fromRGB(30, 30, 40)
+        if callback then callback(state) end
     end)
-    return Btn
-end
-
-local function makeSlider(text, key, min, max, default)
-    local Frame = Instance.new("Frame")
-    Frame.Size = UDim2.new(1, 0, 0, 44)
-    Frame.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
-    Frame.BorderSizePixel = 0
-    Frame.Parent = Container
-    local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, 6) c.Parent = Frame
-
-    local Lbl = Instance.new("TextLabel")
-    Lbl.Size = UDim2.new(1, -12, 0, 20)
-    Lbl.Position = UDim2.new(0, 6, 0, 2)
-    Lbl.BackgroundTransparency = 1
-    Lbl.Text = text .. ": " .. default
-    Lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
-    Lbl.TextXAlignment = Enum.TextXAlignment.Left
-    Lbl.Font = Enum.Font.Gotham
-    Lbl.TextSize = 12
-    Lbl.Parent = Frame
-
-    local Bar = Instance.new("Frame")
-    Bar.Size = UDim2.new(1, -20, 0, 6)
-    Bar.Position = UDim2.new(0, 10, 0, 30)
-    Bar.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
-    Bar.BorderSizePixel = 0
-    Bar.Parent = Frame
-    local bc = Instance.new("UICorner") bc.CornerRadius = UDim.new(1, 0) bc.Parent = Bar
-
-    local Fill = Instance.new("Frame")
-    Fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
-    Fill.BackgroundColor3 = Color3.fromRGB(90, 140, 220)
-    Fill.BorderSizePixel = 0
-    Fill.Parent = Bar
-    local fc = Instance.new("UICorner") fc.CornerRadius = UDim.new(1, 0) fc.Parent = Fill
-
-    local dragging = false
-    Bar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-        end
-    end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            local rel = math.clamp((input.Position.X - Bar.AbsolutePosition.X) / Bar.AbsoluteSize.X, 0, 1)
-            Fill.Size = UDim2.new(rel, 0, 1, 0)
-            local val = math.floor(min + (max - min) * rel)
-            Lbl.Text = text .. ": " .. val
-            State[key] = val
-        end
-    end)
+    return function() return state end
 end
 
 local function makeButton(text, callback, color)
     local Btn = Instance.new("TextButton")
     Btn.Size = UDim2.new(1, 0, 0, 32)
-    Btn.BackgroundColor3 = color or Color3.fromRGB(70, 110, 180)
+    Btn.BackgroundColor3 = color or Color3.fromRGB(60, 100, 165)
     Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
     Btn.Text = text
     Btn.Font = Enum.Font.GothamBold
-    Btn.TextSize = 13
+    Btn.TextSize = 12
+    Btn.TextWrapped = true
     Btn.BorderSizePixel = 0
-    Btn.AutoButtonColor = true
     Btn.Parent = Container
     local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, 6) c.Parent = Btn
     Btn.MouseButton1Click:Connect(callback)
     return Btn
 end
 
-local function makeInput(text, key, placeholder)
+local function makeInput(label, callback, placeholder)
     local Frame = Instance.new("Frame")
-    Frame.Size = UDim2.new(1, 0, 0, 50)
-    Frame.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
+    Frame.Size = UDim2.new(1, 0, 0, 48)
+    Frame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
     Frame.BorderSizePixel = 0
     Frame.Parent = Container
     local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, 6) c.Parent = Frame
 
     local Lbl = Instance.new("TextLabel")
-    Lbl.Size = UDim2.new(1, -12, 0, 18)
+    Lbl.Size = UDim2.new(1, -12, 0, 16)
     Lbl.Position = UDim2.new(0, 6, 0, 2)
     Lbl.BackgroundTransparency = 1
-    Lbl.Text = text
-    Lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
+    Lbl.Text = label
+    Lbl.TextColor3 = Color3.fromRGB(215, 215, 220)
     Lbl.TextXAlignment = Enum.TextXAlignment.Left
     Lbl.Font = Enum.Font.Gotham
-    Lbl.TextSize = 12
+    Lbl.TextSize = 11
     Lbl.Parent = Frame
 
     local Box = Instance.new("TextBox")
-    Box.Size = UDim2.new(1, -12, 0, 26)
-    Box.Position = UDim2.new(0, 6, 0, 22)
-    Box.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
+    Box.Size = UDim2.new(1, -12, 0, 24)
+    Box.Position = UDim2.new(0, 6, 0, 20)
+    Box.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
     Box.BorderSizePixel = 0
-    Box.Text = ""
     Box.PlaceholderText = placeholder or ""
-    Box.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+    Box.PlaceholderColor3 = Color3.fromRGB(110, 110, 125)
     Box.TextColor3 = Color3.fromRGB(220, 220, 220)
     Box.Font = Enum.Font.Gotham
     Box.TextSize = 12
     Box.ClearTextOnFocus = false
     Box.Parent = Frame
     local bc = Instance.new("UICorner") bc.CornerRadius = UDim.new(0, 4) bc.Parent = Box
-
-    Box.FocusLost:Connect(function()
-        State[key] = Box.Text
-    end)
+    Box.FocusLost:Connect(function() if callback then callback(Box.Text) end end)
     return Box
 end
 
--- ============ UI BUILD ============
-makeHeader("AIMBOT")
-makeToggle("Aimbot", "AimbotEnabled")
-makeToggle("Target Lock", "TargetLock")
-makeToggle("Team Check", "TeamCheck")
-makeToggle("Friend Check", "FriendCheck")
-makeSlider("FOV", "AimbotFOV", 50, 500, 200)
-makeSlider("Smoothness", "AimbotSmoothness", 5, 100, 25)
-makeSlider("Max Distance", "MaxDistance", 100, 2000, 1000)
+-- ============ BUILD UI ============
+makeHeader("نص الرسالة")
+makeInput("الرسالة العائمة", function(text)
+    Broadcast.Text = text
+    if Broadcast.LocalLabel then Broadcast.LocalLabel.Text = text end
+end, "اكتب رسالتك هنا")
 
-makeHeader("ESP")
-makeToggle("ESP", "ESPEnabled")
-makeToggle("Tracers", "TracerEnabled")
+makeHeader("الطريقة")
+makeButton("الرسالة المحلية (أنا فقط)", function()
+    Broadcast.attachLocal()
+    print("[OBSIDIAN] Local billboard attached")
+end, Color3.fromRGB(70, 110, 180))
 
-makeHeader("AVATAR COPY")
-makeInput("Username", "TargetUsername", "Enter username")
-makeButton("Copy Avatar", function()
-    if State.TargetUsername ~= "" then applyAvatarFromUsername(State.TargetUsername) end
-end, Color3.fromRGB(70, 150, 90))
+makeButton("بث للجميع (Chat Bubble)", function()
+    Broadcast.sendChat(Broadcast.Text)
+    print("[OBSIDIAN] Broadcast: " .. Broadcast.Text)
+end, Color3.fromRGB(60, 140, 85))
 
-makeHeader("TOOLS")
-makeButton("Clear Accessories", function()
-    local char = LocalPlayer.Character
-    if not char then return end
-    for _, v in ipairs(char:GetChildren()) do
-        if v:IsA("Shirt") or v:IsA("Pants") or v:IsA("Accessory") or v:IsA("Hat") then
-            v:Destroy()
-        end
-    end
-end, Color3.fromRGB(150, 70, 70))
+makeButton("محاولة via Remotes اللعبة", function()
+    Broadcast.tryGameNametag(Broadcast.Text, Color3.fromRGB(255, 100, 100))
+end, Color3.fromRGB(140, 100, 60))
 
-makeButton("Random Body Color", function()
-    local char = LocalPlayer.Character
-    if not char then return end
-    for _, part in ipairs(char:GetChildren()) do
-        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-            part.BrickColor = BrickColor.random()
-        end
-    end
-end, Color3.fromRGB(150, 110, 60))
+makeHeader("خيارات متقدمة")
+local rgbGetter = makeToggle("ألوان RGB للرسالة", true, function(v) Broadcast.RGB = v end)
+local spamGetter = makeToggle("تكرار تلقائي", false, function(v)
+    if v then Broadcast.startSpam() else Broadcast.stopSpam() end
+end)
+local loopGetter = makeToggle("بث مزدوج (chat + remote)", false, function(v) Broadcast.Loop = v end)
 
-makeButton("Reset Character", function()
-    local char = LocalPlayer.Character
-    if char then char:BreakJoints() end
-end, Color3.fromRGB(90, 90, 90))
+makeHeader("تحكم")
+makeButton("إزالة الرسالة المحلية", function()
+    Broadcast.detachLocal()
+    print("[OBSIDIAN] Removed local billboard")
+end, Color3.fromRGB(140, 60, 60))
 
--- ============ MENU TOGGLE ============
+makeButton("إيقاف كل شي", function()
+    Broadcast.stopSpam()
+    Broadcast.detachLocal()
+    print("[OBSIDIAN] Stopped everything")
+end, Color3.fromRGB(150, 50, 50))
+
+makeHeader("معلومات")
+local infoLbl = Instance.new("TextLabel")
+infoLbl.Size = UDim2.new(1, 0, 0, 120)
+infoLbl.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+infoLbl.BorderSizePixel = 0
+infoLbl.Text = "  Chat Bubble: يعمل عبر السيرفر\n  يظهر للجميع كفقاعة شات\n\n  Local Billboard: تراه أنت فقط\n  Remotes: يعتمد على اللعبة"
+infoLbl.TextColor3 = Color3.fromRGB(180, 180, 190)
+infoLbl.TextXAlignment = Enum.TextXAlignment.Left
+infoLbl.TextYAlignment = Enum.TextYAlignment.Top
+infoLbl.TextWrapped = true
+infoLbl.Font = Enum.Font.Gotham
+infoLbl.TextSize = 11
+infoLbl.Parent = Container
+local iC = Instance.new("UICorner") iC.CornerRadius = UDim.new(0, 6) iC.Parent = infoLbl
+
+-- Menu
+local MenuOpen = false
 local function openMenu()
     if MenuOpen then return end
     MenuOpen = true
     Main.Visible = true
-    Main.Size = UDim2.new(0, 0, 0, 420)
-    TweenService:Create(Main, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-        Size = UDim2.new(0, 300, 0, 420)
+    TweenService:Create(Main, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = UDim2.new(0, FW, 0, FH)
     }):Play()
 end
 
 local function closeMenu()
     if not MenuOpen then return end
     MenuOpen = false
-    local tween = TweenService:Create(Main, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
-        Size = UDim2.new(0, 0, 0, 420)
+    local t = TweenService:Create(Main, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+        Size = UDim2.new(0, 0, 0, FH)
     })
-    tween.Completed:Connect(function() Main.Visible = false end)
-    tween:Play()
+    t.Completed:Connect(function() Main.Visible = false end)
+    t:Play()
 end
 
 Icon.MouseButton1Click:Connect(function()
-    if iconDragging then return end
+    if iconDrag then return end
     if MenuOpen then closeMenu() else openMenu() end
 end)
-
 CloseBtn.MouseButton1Click:Connect(closeMenu)
 
--- =================== LOGIC ===================
-local Drawing = Drawing or (getgenv() and getgenv().Drawing)
-local espObjects = {}
-
-local function isAlive(player)
-    local char = player.Character
-    if not char then return false end
-    local h = char:FindFirstChildOfClass("Humanoid")
-    return h and h.Health > 0
-end
-
-local function isTeammate(player)
-    if not State.TeamCheck then return false end
-    if not LocalPlayer.Team then return false end
-    return player.Team == LocalPlayer.Team
-end
-
-local function isFriend(player)
-    if not State.FriendCheck then return false end
-    local ok, result = pcall(function() return LocalPlayer:IsFriendsWith(player.UserId) end)
-    return ok and result
-end
-
-local function isExcluded(player)
-    if player == LocalPlayer then return true end
-    if not isAlive(player) then return true end
-    if isTeammate(player) then return true end
-    if isFriend(player) then return true end
-    return false
-end
-
-local function createESP(player)
-    if espObjects[player] or not Drawing then return end
-    local box = Drawing.new("Square")
-    box.Visible = false
-    box.Color = State.BoxColor
-    box.Thickness = 1
-    box.Filled = false
-    local name = Drawing.new("Text")
-    name.Visible = false
-    name.Color = Color3.fromRGB(255, 255, 255)
-    name.Size = 14
-    name.Center = true
-    name.Outline = true
-    local dist = Drawing.new("Text")
-    dist.Visible = false
-    dist.Color = Color3.fromRGB(255, 255, 0)
-    dist.Size = 12
-    dist.Center = true
-    dist.Outline = true
-    local tracer = Drawing.new("Line")
-    tracer.Visible = false
-    tracer.Color = State.BoxColor
-    tracer.Thickness = 1
-    espObjects[player] = {box=box, name=name, dist=dist, tracer=tracer}
-end
-
-local function removeESP(player)
-    local o = espObjects[player]
-    if o then
-        for _, v in pairs(o) do pcall(function() v:Remove() end) end
-        espObjects[player] = nil
-    end
-end
-
-local function findTarget()
-    local closest, shortest = nil, State.AimbotFOV
-    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-
-    if State.TargetLock and LockedTarget then
-        local p = LockedTarget
-        if p.Parent and isAlive(p) and not isExcluded(p) then
-            local part = p.Character and p.Character:FindFirstChild(State.TargetPart)
-            if part then
-                local sp, on = Camera:WorldToViewportPoint(part.Position)
-                if on and sp.Z > 0 then
-                    local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                    local wd = (Camera.CFrame.Position - part.Position).Magnitude
-                    if d < State.AimbotFOV and wd <= State.MaxDistance then
-                        return part
-                    end
-                end
-            end
-        end
-        LockedTarget = nil
-    end
-
-    for _, p in ipairs(Players:GetPlayers()) do
-        if not isExcluded(p) then
-            local part = p.Character and p.Character:FindFirstChild(State.TargetPart)
-            if part then
-                local sp, on = Camera:WorldToViewportPoint(part.Position)
-                if on and sp.Z > 0 then
-                    local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
-                    local wd = (Camera.CFrame.Position - part.Position).Magnitude
-                    if d < shortest and wd <= State.MaxDistance then
-                        shortest = d
-                        closest = p
-                    end
-                end
-            end
-        end
-    end
-
-    if closest then
-        LockedTarget = closest
-        return closest.Character and closest.Character:FindFirstChild(State.TargetPart)
-    end
-    return nil
-end
-
+-- ============================================================
+-- CORE LOOP
+-- ============================================================
 RunService.RenderStepped:Connect(function()
-    if State.AimbotEnabled then
-        local t = findTarget()
-        if t then
-            local aim = CFrame.new(Camera.CFrame.Position, t.Position)
-            Camera.CFrame = Camera.CFrame:Lerp(aim, State.AimbotSmoothness / 100)
-        end
-    else
-        LockedTarget = nil
+    -- RGB color animation
+    if Broadcast.RGB and Broadcast.LocalLabel then
+        Broadcast.LocalLabel.TextColor3 = Color3.fromHSV(tick() % 1, 1, 1)
     end
 
-    if not Drawing then return end
-
-    for _, p in ipairs(Players:GetPlayers()) do
-        if not isExcluded(p) and State.ESPEnabled then
-            if not espObjects[p] then createESP(p) end
-            local o = espObjects[p]
-            if not o then continue end
-            local char = p.Character
-            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-            local head = char and char:FindFirstChild("Head")
-            if hrp and head then
-                local top = head.Position + Vector3.new(0, 0.5, 0)
-                local bot = hrp.Position - Vector3.new(0, 3, 0)
-                local ts, ton = Camera:WorldToViewportPoint(top)
-                local bs, bon = Camera:WorldToViewportPoint(bot)
-                if ton and bon and ts.Z > 0 and bs.Z > 0 then
-                    local h = math.abs(ts.Y - bs.Y)
-                    local w = h * 0.6
-                    o.box.Size = Vector2.new(w, h)
-                    o.box.Position = Vector2.new(ts.X - w/2, ts.Y)
-                    o.box.Color = State.BoxColor
-                    o.box.Visible = true
-                    o.name.Text = p.Name
-                    o.name.Position = Vector2.new(ts.X, ts.Y - 20)
-                    o.name.Visible = true
-                    local d = (Camera.CFrame.Position - hrp.Position).Magnitude
-                    o.dist.Text = string.format("%d m", math.floor(d))
-                    o.dist.Position = Vector2.new(ts.X, ts.Y - 5)
-                    o.dist.Visible = true
-                    if State.TracerEnabled then
-                        o.tracer.From = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
-                        o.tracer.To = Vector2.new(bs.X, bs.Y)
-                        o.tracer.Color = State.BoxColor
-                        o.tracer.Visible = true
-                    else
-                        o.tracer.Visible = false
-                    end
-                else
-                    o.box.Visible = false
-                    o.name.Visible = false
-                    o.dist.Visible = false
-                    o.tracer.Visible = false
-                end
+    -- Auto-reattach local billboard if character respawned
+    if Broadcast.Text and Broadcast.Text ~= "" then
+        local char = LocalPlayer.Character
+        if char then
+            local head = char:FindFirstChild("Head")
+            if head and not head:FindFirstChild("__OBSIDIAN_TAG") and Broadcast.LocalBillboard then
+                Broadcast.attachLocal()
             end
-        else
-            removeESP(p)
         end
     end
 end)
 
-Players.PlayerRemoving:Connect(removeESP)
-LocalPlayer.CharacterAdded:Connect(function() LockedTarget = nil end)
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    if Broadcast.Text and Broadcast.Text ~= "" then
+        Broadcast.attachLocal()
+    end
+end)
+
+print("[OBSIDIAN] Billboard Broadcast ready. Open menu -> write message -> send.")
