@@ -1,5 +1,5 @@
--- OBSIDIAN HUB v4 | Full Suite + Broadcast
--- Aimbot + ESP + Movement + Avatar + Nametag Broadcast
+-- OBSIDIAN HUB v5 | Full Suite + Injector
+-- Aimbot + ESP + Movement + Broadcast + Avatar + Injection
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -25,18 +25,154 @@ local Config = {
     AvatarUsername = "", TargetUsername = "",
 }
 
-local LockedTarget, LockedTargetTime = nil, 0
+local LockedTarget = nil
 
 -- ============================================================
--- NAMETAG BROADCAST SYSTEM
+-- INJECTOR CORE (safe wrapper)
 -- ============================================================
-local Broadcast = {
-    LocalGui = nil, LocalLabel = nil,
-    SpamThread = nil,
-    KnownRemotes = {},
+local INJECTOR = {
+    Capabilities = {},
+    ActiveHooks = {},
+    ErrorLog = {},
+    Version = "5.0",
 }
 
--- Method 1: Humanoid.DisplayName (Brookhaven and RP games read this)
+local function S(fn, ...)
+    local args = table.pack(...)
+    local ok, res = pcall(function()
+        return fn(table.unpack(args, 1, args.n))
+    end)
+    if not ok then table.insert(INJECTOR.ErrorLog, tostring(res)) end
+    return ok, res
+end
+
+local function detect()
+    local c = INJECTOR.Capabilities
+    c.hookmetamethod = type(rawget(_G, "hookmetamethod")) == "function"
+    c.getrawmetatable = type(rawget(_G, "getrawmetatable")) == "function"
+    c.setreadonly = type(rawget(_G, "setreadonly")) == "function"
+    c.getconnections = type(rawget(_G, "getconnections")) == "function"
+    c.firetouchinterest = type(rawget(_G, "firetouchinterest")) == "function"
+    c.newcclosure = type(rawget(_G, "newcclosure")) == "function"
+    c.getnamecallmethod = type(rawget(_G, "getnamecallmethod")) == "function"
+    return c
+end
+
+local function getRawMT(obj)
+    if getrawmetatable then
+        local ok, mt = pcall(getrawmetatable, obj)
+        if ok and mt then return mt end
+    end
+    if debug and debug.getmetatable then
+        local ok, mt = pcall(debug.getmetatable, obj)
+        if ok and mt then return mt end
+    end
+    local ok, mt = pcall(getmetatable, obj)
+    if ok and mt then return mt end
+    return nil
+end
+
+local function makeClosure(fn)
+    if newcclosure then
+        local ok, c = pcall(newcclosure, fn)
+        if ok and c then return c end
+    end
+    return fn
+end
+
+local function setRO(mt, state)
+    if setreadonly then pcall(setreadonly, mt, state) end
+end
+
+local function hookMethod(mt, methodName, handler)
+    if not mt then return false end
+    local old = rawget(mt, methodName)
+    if not old then return false end
+    setRO(mt, false)
+    local wrapped = makeClosure(function(...)
+        local ok, result = pcall(handler, old, ...)
+        if not ok then return old(...) end
+        if result == nil then return old(...) end
+        return result
+    end)
+    rawset(mt, methodName, wrapped)
+    setRO(mt, true)
+    table.insert(INJECTOR.ActiveHooks, { mt = mt, method = methodName, old = old })
+    return true
+end
+
+function INJECTOR.installNamecallHook()
+    local mt = getRawMT(game)
+    if not mt then return false end
+    return hookMethod(mt, "__namecall", function(old, self, ...)
+        if getnamecallmethod then
+            local method = getnamecallmethod()
+            if method == "Kick" then
+                print("[INJECTOR] Kick blocked")
+                return nil
+            end
+        end
+        return nil
+    end)
+end
+
+function INJECTOR.enableWalkSpoof()
+    local mt = getRawMT(game)
+    if not mt then return false end
+    return hookMethod(mt, "__index", function(old, self, key)
+        if key == "WalkSpeed" or key == "JumpPower" then
+            if typeof(self) == "Instance" and self:IsA("Humanoid") then
+                if LocalPlayer.Character and self == LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+                    return 16
+                end
+            end
+        end
+        return nil
+    end)
+end
+
+function INJECTOR.killMonitors()
+    if not getconnections then return 0 end
+    local char = LocalPlayer.Character
+    if not char then return 0 end
+    local h = char:FindFirstChildOfClass("Humanoid")
+    if not h then return 0 end
+    local total = 0
+    for _, prop in ipairs({"WalkSpeed", "JumpPower", "Health"}) do
+        pcall(function()
+            for _, conn in ipairs(getconnections(h:GetPropertyChangedSignal(prop))) do
+                if conn.Disable then conn:Disable() total = total + 1 end
+            end
+        end)
+    end
+    print("[INJECTOR] Killed " .. total .. " monitors")
+    return total
+end
+
+function INJECTOR.boot()
+    print("===== OBSIDIAN v" .. INJECTOR.Version .. " =====")
+    detect()
+    local sup = {}
+    for k, v in pairs(INJECTOR.Capabilities) do
+        if v == true then table.insert(sup, k) end
+    end
+    print("Supported: " .. table.concat(sup, ", "))
+
+    local ok1, r1 = pcall(INJECTOR.installNamecallHook)
+    print("namecall:", ok1 and r1 or false)
+    local ok2, r2 = pcall(INJECTOR.enableWalkSpoof)
+    print("walkspoof:", ok2 and r2 or false)
+    pcall(INJECTOR.killMonitors)
+    print("Active hooks:", #INJECTOR.ActiveHooks)
+    print("Errors:", #INJECTOR.ErrorLog)
+    print("===== INJECTION COMPLETE =====")
+end
+
+-- ============================================================
+-- BROADCAST SYSTEM
+-- ============================================================
+local Broadcast = { LocalGui = nil, LocalLabel = nil, SpamThread = nil, KnownRemotes = {} }
+
 local function setHumanoidDisplayName(text)
     local char = LocalPlayer.Character
     if not char then return false end
@@ -46,87 +182,59 @@ local function setHumanoidDisplayName(text)
     return true
 end
 
--- Method 2: Chat bubble (replicates via server)
 local function sendChatBubble(text)
     if not text or text == "" then return false end
-    local fired = false
-
-    -- Legacy chat
-    local ok1 = pcall(function()
+    pcall(function()
         local ev = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
         if ev then
             local say = ev:FindFirstChild("SayMessageRequest")
-            if say then say:FireServer(text, "All") fired = true end
+            if say then say:FireServer(text, "All") end
         end
     end)
-
-    -- TextChatService (newer)
     pcall(function()
         if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
             local ch = TextChatService:FindFirstChild("TextChannels")
             if ch then
                 local g = ch:FindFirstChild("RBXGeneral") or ch:FindFirstChild("General")
-                if g then g:SendAsync(text) fired = true end
+                if g then g:SendAsync(text) end
             end
         end
     end)
-
-    return fired
+    return true
 end
 
--- Method 3: Scan ALL remotes and attempt to set nametag via them
 local function scanNametagRemotes()
     Broadcast.KnownRemotes = {}
-    local patterns = {
-        "nametag", "nameplate", "name_tag", "name_plate",
-        "overhead", "tag", "title", "displayname", "display_name",
-        "setname", "set_name", "changedname", "rename",
-        "billboard", "label", "chat", "say", "message", "bubble",
-        "nametagupdate", "updatename", "customname", "prefix", "suffix",
+    local pats = {
+        "nametag", "nameplate", "name_tag", "name_plate", "overhead",
+        "tag", "title", "displayname", "display_name", "setname",
+        "set_name", "changedname", "rename", "billboard", "label",
+        "chat", "say", "message", "bubble", "customname", "prefix",
     }
-
     for _, obj in ipairs(game:GetDescendants()) do
         if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") or obj:IsA("UnreliableRemoteEvent") then
             local n = obj.Name:lower()
-            for _, pat in ipairs(patterns) do
-                if n:find(pat) then
-                    table.insert(Broadcast.KnownRemotes, obj)
-                    break
-                end
+            for _, p in ipairs(pats) do
+                if n:find(p) then table.insert(Broadcast.KnownRemotes, obj) break end
             end
         end
     end
-    print("[OBSIDIAN] Found " .. #Broadcast.KnownRemotes .. " nametag-related remotes")
+    print("[OBSIDIAN] Found " .. #Broadcast.KnownRemotes .. " nametag remotes")
     return #Broadcast.KnownRemotes
 end
 
--- Method 4: Fire all nameplate remotes with many arg variations
 local function fireNametagRemotes(text)
     if #Broadcast.KnownRemotes == 0 then scanNametagRemotes() end
     local char = LocalPlayer.Character
     local head = char and char:FindFirstChild("Head")
-
     local argsets = {
-        {text},
-        {"SetName", text},
-        {"SetText", text},
-        {"Set", text},
-        {LocalPlayer, text},
-        {char, text},
-        {head, text},
-        {LocalPlayer.UserId, text},
-        {text, Color3.fromRGB(255, 255, 255)},
-        {"UpdateName", text},
-        {"ChangeName", text},
-        {"SetDisplayName", text},
-        {"nametag", text},
-        {"chatbubble", text},
-        {text, "All"},
-        {"All", text},
-        {text, 1},
-        {1, text},
+        {text}, {"SetName", text}, {"SetText", text}, {"Set", text},
+        {LocalPlayer, text}, {char, text}, {head, text},
+        {LocalPlayer.UserId, text}, {text, Color3.fromRGB(255,255,255)},
+        {"UpdateName", text}, {"ChangeName", text}, {"SetDisplayName", text},
+        {"nametag", text}, {"chatbubble", text}, {text, "All"}, {"All", text},
+        {text, 1}, {1, text},
     }
-
     local count = 0
     for _, r in ipairs(Broadcast.KnownRemotes) do
         for _, args in ipairs(argsets) do
@@ -137,14 +245,12 @@ local function fireNametagRemotes(text)
     print("[OBSIDIAN] Fired " .. count .. " remotes x " .. #argsets .. " arg sets")
 end
 
--- Method 5: Local billboard (fallback, you only)
 local function attachLocalBillboard(text)
     local char = LocalPlayer.Character
     if not char then return end
     local head = char:FindFirstChild("Head")
     if not head then return end
     if Broadcast.LocalGui then Broadcast.LocalGui:Destroy() end
-
     local bb = Instance.new("BillboardGui")
     bb.Name = "__OBSIDIAN_TAG"
     bb.Size = UDim2.new(0, 220, 0, 40)
@@ -152,7 +258,6 @@ local function attachLocalBillboard(text)
     bb.AlwaysOnTop = true
     bb.MaxDistance = 1000
     bb.Parent = head
-
     local lbl = Instance.new("TextLabel")
     lbl.Size = UDim2.new(1, 0, 1, 0)
     lbl.BackgroundTransparency = 1
@@ -162,7 +267,6 @@ local function attachLocalBillboard(text)
     lbl.TextScaled = true
     lbl.TextStrokeTransparency = 0.2
     lbl.Parent = bb
-
     Broadcast.LocalGui = bb
     Broadcast.LocalLabel = lbl
 end
@@ -175,10 +279,8 @@ local function detachLocalBillboard()
     end
 end
 
--- ===== The full broadcast trigger =====
 function Broadcast.trigger(text)
     if not text or text == "" then return end
-    -- Best-effort: all methods together
     setHumanoidDisplayName(text)
     sendChatBubble(text)
     fireNametagRemotes(text)
@@ -280,8 +382,9 @@ UIS.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then iconStart = nil end
 end)
 
--- Main
+-- Main Frame
 local Main = Instance.new("Frame")
+Main.Name = "Main"
 Main.Size = UDim2.new(0, 0, 0, FH)
 Main.Position = UDim2.new(0.5, -FW/2, 0.5, -FH/2)
 Main.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
@@ -300,7 +403,7 @@ local HC = Instance.new("UICorner") HC.CornerRadius = UDim.new(0, 12) HC.Parent 
 
 local HText = Instance.new("TextLabel")
 HText.Size = UDim2.new(1, -80, 1, 0) HText.Position = UDim2.new(0, 12, 0, 0)
-HText.BackgroundTransparency = 1 HText.Text = "OBSIDIAN  •  HUB"
+HText.BackgroundTransparency = 1 HText.Text = "OBSIDIAN  •  HUB v5"
 HText.TextColor3 = Color3.fromRGB(255, 255, 255)
 HText.TextXAlignment = Enum.TextXAlignment.Left
 HText.Font = Enum.Font.GothamBold HText.TextSize = 13 HText.Parent = Header
@@ -312,8 +415,9 @@ CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255) CloseBtn.Font = Enum.Font.Go
 CloseBtn.TextSize = 13 CloseBtn.BorderSizePixel = 0 CloseBtn.Parent = Header
 local CBC = Instance.new("UICorner") CBC.CornerRadius = UDim.new(0, 7) CBC.Parent = CloseBtn
 
--- Left Tab Strip
+-- Tab Strip
 local TabStrip = Instance.new("Frame")
+TabStrip.Name = "TabStrip"
 TabStrip.Size = UDim2.new(0, 68, 1, -52)
 TabStrip.Position = UDim2.new(0, 6, 0, 48)
 TabStrip.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
@@ -327,8 +431,9 @@ TabLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 TabLayout.Parent = TabStrip
 local TabPad = Instance.new("UIPadding") TabPad.PaddingTop = UDim.new(0, 6) TabPad.Parent = TabStrip
 
--- Content
+-- Content Area
 local ContentArea = Instance.new("Frame")
+ContentArea.Name = "ContentArea"
 ContentArea.Size = UDim2.new(1, -80, 1, -52)
 ContentArea.Position = UDim2.new(0, 76, 0, 48)
 ContentArea.BackgroundTransparency = 1 ContentArea.Parent = Main
@@ -336,6 +441,7 @@ ContentArea.BackgroundTransparency = 1 ContentArea.Parent = Main
 local Pages = {}
 local function makePage(name)
     local p = Instance.new("ScrollingFrame")
+    p.Name = name
     p.Size = UDim2.new(1, 0, 1, 0)
     p.BackgroundTransparency = 1 p.BorderSizePixel = 0
     p.ScrollBarThickness = 3
@@ -480,7 +586,7 @@ local function makeButton(parent, text, callback, color)
     Btn.BorderSizePixel = 0
     Btn.Parent = parent
     local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, 6) c.Parent = Btn
-    Btn.MouseButton1Click:Connect(callback)
+    Btn.MouseButton1Click:Connect(function() pcall(callback) end)
     return Btn
 end
 
@@ -525,9 +631,10 @@ makePage("move")
 makePage("broadcast")
 makePage("char")
 makePage("players")
+makePage("injector")
 makePage("tools")
 
--- ===== COMBAT =====
+-- COMBAT
 local combat = Pages["combat"]
 makeHeader(combat, "التصويب")
 makeToggle(combat, "التصويب التلقائي", "Aimbot")
@@ -539,17 +646,15 @@ makeToggle(combat, "محاكاة بشرية", "AimbotHumanize")
 makeSlider(combat, "نطاق التصويب", "AimbotFOV", 30, 400, 140)
 makeSlider(combat, "نعومة التصويب", "AimbotSmooth", 2, 30, 8)
 makeSlider(combat, "أقصى مسافة", "AimbotMaxDist", 50, 1500, 600)
-
 makeHeader(combat, "كشف اللاعبين")
 makeToggle(combat, "تفعيل ESP", "ESP")
 makeToggle(combat, "خطوط التتبع", "Tracers")
 
--- ===== MOVE =====
+-- MOVE
 local move = Pages["move"]
 makeHeader(move, "الطيران")
 makeToggle(move, "الطيران", "Fly")
 makeSlider(move, "سرعة الطيران", "FlySpeed", 20, 150, 55)
-
 makeHeader(move, "الركض والقفز")
 makeToggle(move, "ركض سريع", "SpeedOn")
 makeSlider(move, "سرعة الركض", "SpeedValue", 16, 100, 40)
@@ -557,55 +662,42 @@ makeToggle(move, "قفز عالي", "JumpOn")
 makeSlider(move, "قوة القفز", "JumpValue", 50, 200, 90)
 makeToggle(move, "قفز لا محدود", "InfJump")
 
--- ===== BROADCAST =====
+-- BROADCAST
 local bc = Pages["broadcast"]
 makeHeader(bc, "الرسالة فوق الرأس")
 makeInput(bc, "نص الرسالة", "BroadcastText", "اكتب رسالتك")
-
 makeButton(bc, "بث للجميع (3 طرق معاً)", function()
     Broadcast.trigger(Config.BroadcastText)
-    print("[OBSIDIAN] Full broadcast triggered: " .. Config.BroadcastText)
 end, Color3.fromRGB(60, 150, 85))
-
 makeButton(bc, "طريقة 1: Humanoid DisplayName", function()
     setHumanoidDisplayName(Config.BroadcastText)
-    print("[OBSIDIAN] DisplayName set (Brookhaven reads this)")
 end, Color3.fromRGB(70, 110, 180))
-
 makeButton(bc, "طريقة 2: Chat Bubble", function()
     sendChatBubble(Config.BroadcastText)
-    print("[OBSIDIAN] Chat bubble sent")
 end, Color3.fromRGB(70, 110, 180))
-
-makeButton(bc, "طريقة 3: فحص وفتح Remotes", function()
+makeButton(bc, "طريقة 3: فحص Remotes", function()
     scanNametagRemotes()
     fireNametagRemotes(Config.BroadcastText)
 end, Color3.fromRGB(140, 100, 60))
-
 makeHeader(bc, "خيارات")
 makeToggle(bc, "تكرار تلقائي", "BroadcastSpam", function(v)
     if v then Broadcast.startSpam() else Broadcast.stopSpam() end
 end)
 makeSlider(bc, "الفاصل الزمني", "BroadcastInterval", 1, 10, 3)
-
 makeButton(bc, "تثبيت محلي (لك فقط)", function()
     attachLocalBillboard(Config.BroadcastText)
 end, Color3.fromRGB(80, 80, 130))
-
 makeButton(bc, "إزالة المحلي", function()
     detachLocalBillboard()
 end, Color3.fromRGB(120, 70, 70))
 
--- ===== CHAR =====
+-- CHAR
 local charPage = Pages["char"]
 makeHeader(charPage, "نسخ أفاتار")
 makeInput(charPage, "اسم اللاعب", "AvatarUsername", "اكتب الاسم")
 makeButton(charPage, "نسخ الأفاتار", function()
-    if Config.AvatarUsername == "" then return end
-    local ok = applyAvatarFromUsername(Config.AvatarUsername)
-    print("[OBSIDIAN] Avatar copy: " .. tostring(ok))
+    applyAvatarFromUsername(Config.AvatarUsername)
 end, Color3.fromRGB(60, 140, 85))
-
 makeHeader(charPage, "أدوات")
 makeButton(charPage, "إزالة الملحقات", function()
     local c = LocalPlayer.Character
@@ -614,7 +706,6 @@ makeButton(charPage, "إزالة الملحقات", function()
         if v:IsA("Accessory") or v:IsA("Shirt") or v:IsA("Pants") or v:IsA("Hat") then v:Destroy() end
     end
 end, Color3.fromRGB(140, 60, 60))
-
 makeButton(charPage, "لون عشوائي", function()
     local c = LocalPlayer.Character
     if not c then return end
@@ -623,13 +714,11 @@ makeButton(charPage, "لون عشوائي", function()
     end
 end, Color3.fromRGB(140, 100, 55))
 
--- ===== PLAYERS =====
+-- PLAYERS
 local plyPage = Pages["players"]
 makeHeader(plyPage, "استهداف لاعب")
 makeInput(plyPage, "اسم اللاعب", "TargetUsername", "اكتب الاسم")
-
 makeButton(plyPage, "الانتقال إليه", function()
-    if Config.TargetUsername == "" then return end
     for _, p in ipairs(Players:GetPlayers()) do
         if p.Name:lower() == Config.TargetUsername:lower() and p.Character then
             local hrp = p.Character:FindFirstChild("HumanoidRootPart")
@@ -639,39 +728,77 @@ makeButton(plyPage, "الانتقال إليه", function()
         end
     end
 end, Color3.fromRGB(60, 140, 85))
-
-makeButton(plyPage, "محاولة قذفه (Remotes)", function()
-    if Config.TargetUsername == "" then return end
-    local target
+makeButton(plyPage, "قذفه (5 طرق)", function()
     for _, p in ipairs(Players:GetPlayers()) do
-        if p.Name:lower() == Config.TargetUsername:lower() then target = p break end
-    end
-    if not target or not target.Character then return end
-    local hrp = target.Character:FindFirstChild("HumanoidRootPart")
-
-    local fired = 0
-    for _, r in ipairs(game:GetDescendants()) do
-        if r:IsA("RemoteEvent") then
-            local n = r.Name:lower()
-            if n:find("launch") or n:find("push") or n:find("fling") or n:find("velocity") or n:find("jump") or n:find("ragdoll") or n:find("hit") then
-                pcall(function() r:FireServer(target, Vector3.new(0, 800, 0)) end)
-                pcall(function() r:FireServer(target, 500) end)
-                pcall(function() r:FireServer(hrp, Vector3.new(0, 800, 0)) end)
-                fired = fired + 1
+        if p.Name:lower() == Config.TargetUsername:lower() and p.Character then
+            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+            pcall(function() hrp:SetNetworkOwner(LocalPlayer) end)
+            pcall(function()
+                local bv = Instance.new("BodyVelocity")
+                bv.Velocity = Vector3.new(0, 9999, 0)
+                bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                bv.Parent = hrp
+                game:GetService("Debris"):AddItem(bv, 0.2)
+            end)
+            pcall(function()
+                local bav = Instance.new("BodyAngularVelocity")
+                bav.AngularVelocity = Vector3.new(99999, 99999, 99999)
+                bav.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+                bav.Parent = hrp
+                game:GetService("Debris"):AddItem(bav, 0.2)
+            end)
+            for _, r in ipairs(game:GetDescendants()) do
+                if r:IsA("RemoteEvent") then
+                    local n = r.Name:lower()
+                    if n:find("launch") or n:find("push") or n:find("fling") or n:find("velocity") or n:find("ragdoll") then
+                        pcall(function() r:FireServer(p, Vector3.new(0, 9999, 0)) end)
+                        pcall(function() r:FireServer(hrp, Vector3.new(0, 9999, 0)) end)
+                    end
+                end
             end
+            return
         end
     end
-    print("[OBSIDIAN] Fired " .. fired .. " launch remotes")
 end, Color3.fromRGB(180, 70, 70))
 
--- ===== TOOLS =====
+-- INJECTOR
+local inj = Pages["injector"]
+makeHeader(inj, "نظام الحقن")
+makeButton(inj, "boot كامل", function() INJECTOR.boot() end, Color3.fromRGB(200, 50, 50))
+makeButton(inj, "فحص قدرات المنفذ", function()
+    detect()
+    for k, v in pairs(INJECTOR.Capabilities) do
+        if v == true then print("  [OK] " .. k) end
+    end
+end, Color3.fromRGB(70, 110, 170))
+makeHeader(inj, "حواقن منفصلة")
+makeButton(inj, "Namecall Hook", function()
+    print("namecall:", INJECTOR.installNamecallHook())
+end, Color3.fromRGB(150, 80, 80))
+makeButton(inj, "WalkSpeed Spoof", function()
+    print("walkspoof:", INJECTOR.enableWalkSpoof())
+end, Color3.fromRGB(150, 80, 80))
+makeButton(inj, "Kill Anti-Cheat Monitors", function() INJECTOR.killMonitors() end, Color3.fromRGB(150, 80, 80))
+makeHeader(inj, "معلومات النظام")
+makeButton(inj, "طباعة سجل الأخطاء", function()
+    print("== ERRORS ==")
+    for i, e in ipairs(INJECTOR.ErrorLog) do print(i .. ": " .. e) end
+    print("Total:", #INJECTOR.ErrorLog)
+end, Color3.fromRGB(90, 90, 130))
+makeButton(inj, "مسح سجل الأخطاء", function() INJECTOR.ErrorLog = {} end, Color3.fromRGB(90, 90, 130))
+makeButton(inj, "طباعة الحواقن النشطة", function()
+    print("Active hooks:", #INJECTOR.ActiveHooks)
+    for _, h in ipairs(INJECTOR.ActiveHooks) do print("  " .. tostring(h.method)) end
+end, Color3.fromRGB(90, 90, 130))
+
+-- TOOLS
 local tools = Pages["tools"]
 makeHeader(tools, "أدوات عامة")
 makeButton(tools, "إعادة الشخصية", function()
     local c = LocalPlayer.Character
     if c then c:BreakJoints() end
 end, Color3.fromRGB(80, 80, 90))
-
 makeButton(tools, "طباعة معلومات", function()
     print("PlaceId:", game.PlaceId)
     print("FilteringEnabled:", Workspace.FilteringEnabled)
@@ -680,10 +807,8 @@ makeButton(tools, "طباعة معلومات", function()
     print("Drawing:", tostring(Drawing ~= nil))
     print("hookmetamethod:", tostring(hookmetamethod ~= nil))
 end, Color3.fromRGB(70, 110, 170))
-
 makeButton(tools, "فحص Remotes", function()
-    local n = scanNametagRemotes()
-    print("[OBSIDIAN] Found " .. n .. " nametag remotes")
+    print("Total nametag remotes:", scanNametagRemotes())
 end, Color3.fromRGB(70, 110, 170))
 
 -- Tabs
@@ -692,13 +817,12 @@ makeTab("حركة", "move")
 makeTab("بث", "broadcast")
 makeTab("شخصية", "char")
 makeTab("لاعبين", "players")
+makeTab("حقن", "injector")
 makeTab("أدوات", "tools")
 
 showPage("broadcast")
 
--- ============================================================
 -- MENU TOGGLE
--- ============================================================
 local MenuOpen = false
 local function openMenu()
     if MenuOpen then return end
@@ -873,12 +997,10 @@ RunService.RenderStepped:Connect(function(dt)
         end
     end
 
-    -- Local billboard RGB + reattach
     if Broadcast.LocalLabel and Config.NametagRGB then
         Broadcast.LocalLabel.TextColor3 = Color3.fromHSV(tick() % 1, 1, 1)
     end
 
-    -- ESP
     if not Drawing then return end
     for _, p in ipairs(Players:GetPlayers()) do
         if not isExcluded(p) and Config.ESP then
@@ -943,10 +1065,15 @@ end)
 
 Players.PlayerRemoving:Connect(removeESP)
 
--- Auto scan remotes on start
+-- Auto boot injector + scan remotes
+task.spawn(function()
+    task.wait(1)
+    pcall(INJECTOR.boot)
+end)
+
 task.spawn(function()
     task.wait(2)
     scanNametagRemotes()
 end)
 
-print("[OBSIDIAN] v4 Full Suite loaded.")
+print("[OBSIDIAN] v5 Full Suite loaded.")
